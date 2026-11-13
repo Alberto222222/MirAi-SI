@@ -1,0 +1,731 @@
+# Scelte progettuali
+
+Ogni scelta è valutata secondo tre criteri: **resa** (qualità del risultato),
+**tempo** di realizzazione e **difficoltà** implementativa.
+
+## D1 – Dataset: WikiChurches
+L'*Architectural Heritage Elements Dataset* (Llamas et al., 2017) raccoglie immagini
+di singoli elementi architettonici (cupole, colonne, gargoyle…), senza edifici interi
+e senza etichette di stile: non è adatto alla classificazione degli stili.
+
+È stato quindi adottato **WikiChurches** (Barz & Denzler, NeurIPS 2021): fotografie di
+chiese da Wikimedia Commons, con lo stile di ciascun edificio ricavato da Wikidata,
+licenza CC BY-SA 4.0.
+
+- Resa: alta – foto reali e identificativo dell'edificio per ogni immagine.
+- Tempo: medio – archivio da 12,4 GB, ridotto una sola volta a circa 150 MB.
+- Difficoltà: media.
+
+## D2 – Classi: Romanico, Gotico, Rinascimentale, Barocco
+Sono i quattro stili più rappresentati nel dataset. La coppia Rinascimentale/Barocco,
+stilisticamente vicina, rende significativa l'analisi della matrice di confusione.
+
+## D3 – Split ufficiale WikiChurches-4
+Conteggi preliminari (immagini per stile):
+
+| Stile | Solo stile principale | Con sotto-stili |
+|---|---|---|
+| Romanico | 1.591 | 2.209 |
+| Gotico | 1.581 | 3.649 |
+| Rinascimentale | 187 | 217 |
+| Barocco | 1.392 | 1.508 |
+
+Si adotta lo split ufficiale *WikiChurches-4* fornito dagli autori (7.526 immagini:
+5.838 training, 206 validazione, 1.482 test), che riconduce i sotto-stili (es. *Italian
+Gothic*, *Rococo*) ai quattro stili principali.
+
+- Resa: alta – risultati confrontabili con quelli pubblicati sullo stesso benchmark.
+- Tempo: basso – etichette e divisione già pronte.
+- Difficoltà: bassa.
+
+Le chiese con stili appartenenti a classi diverse (es. romanico e gotico) non fanno parte
+del benchmark; possono servire come casi di studio qualitativi per la lettura «fuzzy»
+delle probabilità.
+
+## D4 – Divisione per chiesa
+Nello split ufficiale tutte le foto di uno stesso edificio appartengono a un solo insieme.
+Uno split per foto porterebbe immagini dello stesso edificio sia in addestramento sia in
+test, e la valutazione misurerebbe il riconoscimento del singolo monumento anziché dello
+stile. La proprietà viene verificata automaticamente, insieme all'assenza di
+foto identiche (stesso hash MD5) tra training e validazione/test.
+
+## D4b – Classe minoritaria: Rinascimentale
+Nello split ufficiale il training set contiene 64 immagini rinascimentali contro 3.041
+gotiche (rapporto 1:47); validazione e test sono invece più bilanciati. Contromisure:
+
+- **pesi di classe** nella cross-entropy. I pesi «bilanciati» n / (k · n_classe)
+  darebbero al Rinascimentale peso 22,8: ogni sua immagine conterebbe quanto 47 immagini
+  gotiche e, con soli 64 esempi, il modello tenderebbe a sovra-predire la classe.
+  Si usa la **radice** dei pesi bilanciati (Romanico 0,94 · Gotico 0,69 ·
+  Rinascimentale 4,78 · Barocco 1,16), che riduce lo squilibrio senza esasperarlo;
+- **data augmentation** (ritaglio casuale, ribaltamento orizzontale, luminosità e
+  contrasto), che moltiplica le varianti delle poche immagini disponibili;
+- **macro-F1** come metrica principale accanto all'accuracy, che da sola premierebbe
+  le classi più numerose;
+- analisi della confusione Rinascimentale/Barocco nella matrice di confusione.
+
+## D5 – Immagini ridimensionate a 256 px sul lato corto
+Formato standard per le reti pre-addestrate su ImageNet, con ritaglio 224×224
+in addestramento. Le immagini sono archiviate in un unico file `.tar` su Google
+Drive, più rapido da trasferire di migliaia di file singoli.
+
+## D6 – Perimetro del progetto
+Per privilegiare un sistema completo e valutato in modo rigoroso sono stati esclusi:
+
+- **ricerca del monumento tramite GPS/EXIF**: i metadati di posizione sono spesso assenti
+  nelle foto condivise e indicano la posizione del fotografo, non del monumento;
+- **ottimizzazione degli iperparametri con algoritmo genetico**: ogni valutazione
+  richiederebbe un addestramento della VGG-16, con un costo non compatibile con le
+  risorse disponibili; si usano valori di riferimento ed early stopping;
+- **generazione del testo con un LLM**: sostituita da testi descrittivi per stile,
+  che non rischiano di introdurre informazioni errate.
+
+## D7 – Baseline e modello M1: dalla prima alla seconda iterazione
+Test set ufficiale: 1.481 immagini (Romanico 503, Gotico 506, Rinascimentale 100, Barocco 372).
+
+**Iterazione 1**
+
+| Modello | Accuracy | Macro-F1 | Balanced accuracy |
+|---|---|---|---|
+| Classe maggioritaria (sempre Gotico) | 0,342 | 0,127 | 0,250 |
+| CNN da zero (30 epoche max, pazienza 4) | 0,340 | 0,127 | 0,250 |
+| M1: VGG-16 congelata + GAP → Dropout → Dense | 0,574 | 0,503 | 0,491 |
+
+McNemar CNN vs M1: b = 99, c = 446, p ≈ 1·10⁻⁴⁹.
+
+Diagnosi:
+- **CNN**: loss di training ferma a ~0,99 e accuracy di validazione costante a 0,24; l'early
+  stopping l'ha interrotta all'epoca 6 (migliore: 2) e il modello predice una sola classe
+  (Romanico). Non è una baseline significativa ma un addestramento interrotto troppo presto:
+  una rete addestrata da zero richiede più epoche, e la validazione (206 immagini) è rumorosa.
+- **M1**: loss iniziale 4,48 (il valore atteso per 4 classi equiprobabili è ln 4 ≈ 1,39), segno
+  di feature VGG con valori grandi e non normalizzati; accuracy di training ferma a 0,68
+  (underfitting della testa lineare); forte sovra-predizione del Romanico (41% dei gotici e
+  38% dei barocchi classificati come romanici).
+
+**Correzioni (iterazione 2)**
+- CNN: epoche 30 → 40, pazienza 4 → 8, momentum della BatchNorm 0,99 → 0,9 (statistiche usate
+  in valutazione più rapide a stabilizzarsi).
+- M1: testa GAP → **BatchNorm** → **Dense(256, ReLU)** → Dropout(0,5) → Dense softmax;
+  epoche 20 → 30, pazienza 4 → 6. La VGG-16 resta congelata.
+
+**Risultati dell'iterazione 2 (configurazione definitiva del notebook 02)**
+
+| Modello | Accuracy | Macro-F1 | Balanced accuracy | F1 Rom. | F1 Got. | F1 Rin. | F1 Bar. |
+|---|---|---|---|---|---|---|---|
+| Classe maggioritaria | 0,342 | 0,127 | 0,250 | 0,000 | 0,509 | 0,000 | 0,000 |
+| CNN da zero | 0,454 | 0,437 | 0,477 | 0,466 | 0,523 | 0,365 | 0,396 |
+| M1 VGG-16 congelata | 0,569 | 0,511 | 0,511 | 0,631 | 0,566 | 0,333 | 0,513 |
+
+McNemar CNN vs M1: b = 206, c = 376, p ≈ 2,5·10⁻¹². La CNN ora impara (25 epoche, migliore la 17);
+M1 parte da una loss di 1,03 ma va in overfitting dopo 2 epoche (loss di training in calo, di
+validazione in salita): le feature congelate di ImageNet sono il limite. Errore principale di M1:
+il 47% delle immagini gotiche è classificato come romanico.
+
+## D8 – Fine-tuning dell'ultimo blocco (M2)
+- Si parte dai pesi di M1 e si sblocca solo `block5` (3 strati convoluzionali, ~7 milioni di pesi):
+  gli strati iniziali rappresentano bordi e texture, generici e già adatti; quelli finali forme e
+  parti, da specializzare su archi, finestre e facciate.
+- Learning rate 1·10⁻⁵ (100 volte più basso di quello della testa), per non distruggere le
+  feature pre-addestrate; massimo 20 epoche, pazienza 5.
+- Confronto M1 vs M2 con il test di McNemar sullo stesso test set.
+
+## D9 – Analisi degli errori con i metadati delle chiese
+Oltre alla matrice di confusione, gli errori vengono analizzati con informazioni che il modello
+non vede: sotto-stile Wikidata (per verificare se l'errore Gotico → Romanico è concentrato in
+sotto-stili come il *Brick Gothic*), Paese e posizione geografica, confidenza della predizione.
+
+**Risultati del notebook 03 (test ufficiale, 1.481 immagini)**
+
+| Modello | Accuracy | Macro-F1 | Balanced acc. | F1 Rom. | F1 Got. | F1 Rin. | F1 Bar. |
+|---|---|---|---|---|---|---|---|
+| M1 VGG-16 congelata | 0,569 | 0,511 | 0,511 | 0,631 | 0,566 | 0,333 | 0,513 |
+| M2 VGG-16 blocco 5 | 0,653 | 0,585 | 0,573 | 0,662 | 0,670 | 0,327 | 0,681 |
+
+McNemar M1 vs M2: b = 96, c = 220, p ≈ 4,5·10⁻¹². L'errore Gotico → Romanico scende dal 47% al
+27%; il Barocco riconosciuto sale dal 38% al 69%. Il Rinascimentale resta debole: il 56% delle sue
+immagini è classificato come Barocco.
+
+Analisi per sotto-stile (M2, immagini gotiche classificate come romaniche): «Gothic architecture»
+38,8% (224 immagini), Brick Gothic 22,6% (31), English Gothic 21,4% (14), Gothic Revival 15,8%
+(228). **L'ipotesi Brick Gothic è smentita**: l'errore si concentra sulle chiese con etichetta
+generica, spesso edifici medievali di transizione. Accuracy per Paese: Francia 0,74, Italia 0,49.
+Confidenza media: 0,72 sulle predizioni corrette, 0,59 su quelle errate.
+
+## D10 – Mappa di Kohonen (SOM) al posto dell'algoritmo genetico
+L'algoritmo genetico avrebbe cercato gli iperparametri della testa (learning rate, dropout,
+neuroni, L2, esponente dei pesi di classe) con fitness = macro-F1 di validazione. Guadagno atteso
+piccolo e rischio di sovradattamento a un validation ridotto. La SOM, addestrata senza etichette
+sui vettori di 512 caratteristiche del modello finale, risponde invece a una domanda emersa dai
+risultati: gli stili sono separati nello spazio appreso dalla rete, e dove si sovrappongono
+(Rinascimento/Barocco, Gotico/Romanico)?
+
+## D11 – Miglioramenti del modello (notebook 03b)
+Riferimento: sul benchmark a 6 stili gli autori di WikiChurches riportano una balanced accuracy
+del 60,2% (ResNet-50, 224 px) e del 69,5% nella configurazione migliore (448 px, pre-addestramento
+ImageNet-21k, bilanciamento); anche lì il Rinascimentale è lo stile più confuso con il Barocco.
+
+Interventi a basso costo, tutti scelti sul validation:
+- validation allargato con il 15% delle chiese del training (il test ufficiale resta invariato);
+- sovra-campionamento (almeno 400 immagini per stile per epoca) e augmentation forte;
+- **M3**: VGG-16 con fine-tuning dei blocchi 4 e 5, partendo da M1;
+- test-time augmentation (media tra immagine e immagine ribaltata);
+- confronto con **ConvNeXt-Tiny** (2022), stesso protocollo e stessa testa.
+
+Il modello finale è scelto sulla macro-F1 di validation; il test serve solo a riportare i
+risultati. Escluso per tempi: aumento della risoluzione a 448 px (richiederebbe di rigenerare il
+dataset), indicato come sviluppo futuro.
+
+**Dati del notebook 03b.** Validation allargato: 1.082 immagini (Romanico 295, Gotico 512,
+Rinascimentale 61, Barocco 214) contro le 206 dello split ufficiale. Training: 4.962 immagini,
+5.307 dopo il sovra-campionamento (Rinascimentale da 55 a 400, ottenute ripetendo le stesse 55 foto).
+Pesi di classe ricalcolati: Romanico 0,97 · Gotico 0,72 · Rinascimentale 1,82 · Barocco 1,20.
+
+**Addestramento.**
+- M3: migliore all'epoca 5 su 11 (250 s su GPU L4). Dopo l'epoca 5 la loss di training continua a
+  scendere (0,57 → 0,41) mentre quella di validation risale (0,77 → 0,81): sovradattamento,
+  contenuto dall'early stopping.
+- ConvNeXt-Tiny: fase 1 (solo testa) migliore all'epoca 2; nella fase 2 (sblocco di `stage_3`) la
+  loss di validation non migliora mai (epoca migliore 1). Il fine-tuning non porta beneficio.
+
+**Validation (scelta del modello)**
+
+| Modello | Accuracy | Macro-F1 | Balanced acc. | F1 Rinasc. |
+|---|---|---|---|---|
+| M3 VGG-16 blocchi 4-5 | 0,713 | 0,637 | 0,624 | 0,414 |
+| **M3 + TTA (scelto)** | 0,719 | **0,639** | 0,627 | 0,395 |
+| M2 blocco 5 (ottimistico: parte del validation era nel suo training) | 0,701 | 0,638 | 0,633 | 0,424 |
+| ConvNeXt-Tiny + TTA | 0,665 | 0,578 | 0,564 | 0,360 |
+
+**Test ufficiale (1.481 immagini)**
+
+| Modello | Accuracy | Macro-F1 | Balanced acc. | F1 Rom. | F1 Got. | F1 Rin. | F1 Bar. |
+|---|---|---|---|---|---|---|---|
+| M2 VGG-16 blocco 5 | 0,653 | 0,585 | 0,573 | 0,662 | 0,670 | 0,327 | 0,681 |
+| M3 VGG-16 blocchi 4-5 | 0,676 | 0,594 | 0,581 | 0,678 | 0,708 | 0,299 | 0,691 |
+| **M3 + TTA (modello finale)** | **0,677** | 0,588 | 0,577 | 0,678 | 0,711 | 0,272 | 0,692 |
+| ConvNeXt-Tiny | 0,631 | 0,536 | 0,535 | 0,594 | 0,677 | 0,205 | 0,668 |
+| ConvNeXt-Tiny + TTA | 0,630 | 0,532 | 0,532 | 0,591 | 0,675 | 0,192 | 0,671 |
+
+McNemar M2 vs modello finale: b = 111 (solo M2 corretto), c = 146 (solo M3 + TTA corretto),
+chi-quadro con correzione di continuità, p ≈ 0,034: il miglioramento è statisticamente
+significativo al 5%, ma di entità modesta (+2,4 punti di accuracy).
+
+**Lettura dei risultati**
+- L'errore Gotico → Romanico scende dal 27% (M2) al 16%; la confusione inversa Romanico → Gotico
+  sale al 27%. Le chiese di transizione romanico-gotica, con una sola etichetta Wikidata per
+  edificio, restano il caso ambiguo principale.
+- La test-time augmentation ha un effetto nullo (+0,002 di macro-F1 sul validation, −0,006 sul
+  test). La scelta del modello resta quella fatta sul validation.
+- ConvNeXt-Tiny, architettura più recente, è inferiore alla VGG-16 su questo problema: con dati
+  scarsi e rumorosi un backbone più moderno non garantisce un guadagno.
+- **Il Rinascimentale resta il limite principale**: recall 0,17 e precisione 0,68. Il modello lo
+  predice raramente (25 volte su 1.481) e il 56% delle immagini rinascimentali è classificato come
+  Barocco. Pesi di classe, sovra-campionamento, augmentation e cambio di architettura non lo hanno
+  migliorato: il limite sono le 55 fotografie distinte disponibili nel training, non il modello.
+
+## D12 – Dati esterni per il Rinascimentale (notebook 03c)
+Dall'analisi del notebook 03b il limite del Rinascimentale sono i dati (55 fotografie distinte nel
+training), non il modello. Si integra il training con **MonuMAI** (Lamas et al., 2021): 1.514 facciate di
+monumenti in quattro stili, di cui 312 rinascimentali, con riquadri annotati da esperti su 15 elementi
+architettonici; licenza CC BY 4.0.
+
+Alternativa scartata: l'*Architectural Style Dataset* (Xu et al., 2014, 25 stili da Wikimedia Commons)
+non ha una classe dedicata al Rinascimento.
+
+Regole fissate prima di eseguire l'esperimento:
+- MonuMAI entra solo nel training; validation e test restano quelli di WikiChurches;
+- solo Gotico, Rinascimentale e Barocco, con lo stesso numero di immagini per stile: se MonuMAI
+  fornisse solo immagini rinascimentali, la rete potrebbe imparare a riconoscere la provenienza della
+  foto (inquadratura frontale, monumenti spagnoli) invece dello stile;
+- eliminazione delle immagini quasi identiche a quelle di validation o test, con hash percettivo
+  (pHash a 64 bit, distanza di Hamming ≤ 8): le due raccolte provengono entrambe dal web;
+- stessa configurazione di M3; un secondo M3 senza dati esterni, con un altro seme, stima la
+  variabilità dovuta al caso;
+- il nuovo modello si accetta solo se la macro-F1 di validation supera quella di M3 + TTA di almeno
+  max(0,01; variabilità stimata). Il test si usa solo dopo la decisione.
+
+Le annotazioni degli elementi di MonuMAI servono anche alle fasi successive: verifica delle mappe di
+salienza (la rete guarda gli elementi indicati dagli esperti?) e descrizione degli elementi nell'app.
+
+**Risultati del notebook 03c**
+- Duplicati: nessuna immagine MonuMAI è quasi identica a immagini di validation o test
+  (0 su 1.187; distanza minima 10 bit, mediana 18).
+- Training integrato: 312 immagini MonuMAI per stile (Gotico, Rinascimentale, Barocco). Il
+  Rinascimentale passa da 55 a 367 immagini distinte, di cui l'85% da MonuMAI.
+
+Validation (1.082 immagini):
+
+| Modello | Accuracy | Macro-F1 | F1 Rinasc. |
+|---|---|---|---|
+| M3 (03b) + TTA – modello finale | 0,719 | **0,639** | 0,395 |
+| M3 controllo (stessi dati, altro seme) + TTA | 0,689 | 0,597 | 0,300 |
+| M3 + MonuMAI + TTA | 0,694 | 0,573 | 0,187 |
+
+Variabilità stimata tra due addestramenti identici: 0,042 di macro-F1, quindi soglia 0,042.
+M3 + MonuMAI: Δ = −0,066 → **respinto** secondo la regola fissata; il modello finale resta M3 (03b) + TTA.
+
+Test ufficiale, riportato per completezza dopo la decisione: M3 + MonuMAI + TTA ottiene accuracy
+0,689, macro-F1 0,610, balanced accuracy 0,595 (F1 Rom. 0,690 · Got. 0,722 · Rin. 0,321 · Bar. 0,706),
+contro 0,677 / 0,588 / 0,577 del modello finale; recall del Rinascimentale 0,21 contro 0,17.
+McNemar: b = 72, c = 91, p ≈ 0,16, differenza **non significativa**.
+
+**Lettura**
+- Validation e test danno indicazioni opposte (−0,066 contro +0,022). Le differenze sono dello stesso
+  ordine della variabilità tra due addestramenti identici (0,04): con questi dati, scarti di qualche
+  centesimo di macro-F1 tra varianti di M3 non sono distinguibili dal caso. La regola decisa prima
+  dell'esperimento evita di scegliere il modello in base al test.
+- Il valore di validation di M3 (03b) è probabilmente ottimistico: M3 è stato scelto come migliore
+  tra più candidati sullo stesso validation (effetto del «vincitore»), e il controllo con un altro seme
+  ottiene 0,597.
+- MonuMAI non risolve il Rinascimentale (recall sul test da 0,17 a 0,21): sono facciate andaluse
+  fotografate da vicino, un dominio diverso dalle chiese di WikiChurches, spesso fotografate per intero. Il limite resta la quantità di dati rinascimentali dello
+  stesso dominio.
+- MonuMAI resta utile per le fasi successive: le annotazioni dei 15 elementi architettonici servono a
+  verificare le mappe di salienza e a descrivere gli elementi nell'app.
+
+## D13 – Il modello si congela; mappa di Kohonen sulle caratteristiche (notebook 04)
+Dopo il notebook 03c il modello finale resta **M3 (03b) + TTA**. Ensemble, soglie per classe e
+calibrazione delle probabilità sono stati valutati e scartati: i guadagni attesi sono dello stesso ordine
+della variabilità tra addestramenti (0,04 di macro-F1) e l'incertezza tra stili vicini viene gestita
+nell'applicazione con una risposta graduata (logica fuzzy).
+
+La SOM (Kohonen) proietta le 512 caratteristiche dello strato GAP del modello finale (media tra immagine e
+immagine ribaltata, standardizzate sul training) su una griglia 18 × 18, circa 5·√N neuroni per N ≈ 5.000
+immagini di training. Addestramento online non supervisionato: 20 presentazioni per immagine, raggio del
+vicinato da 9 neuroni e tasso di apprendimento da 0,5 in decrescita esponenziale, pesi iniziali sul piano
+delle prime due componenti principali.
+
+Uso dei risultati:
+- mappa degli stili, mappe per stile e U-matrix: dove gli stili sono separati e dove si sovrappongono;
+- SOM come classificatore (etichetta del neurone vincitore) confrontata con la rete;
+- posizione degli errori sulla mappa (confini, regioni miste);
+- «chiese simili»: le 5 immagini più vicine nello spazio delle caratteristiche, mostrate dall'app.
+
+**Risultati del notebook 04**
+- Controllo: le caratteristiche provengono dal modello finale (accuracy 0,677, macro-F1 0,588 sul test,
+  identiche al notebook 03b).
+- Qualità della mappa: errore di quantizzazione da 20,7 (inizializzazione) a 19,3 sul training e 19,6 sul
+  test; errore topografico 0,068 sul training e 0,103 sul test, quindi la mappa conserva la vicinanza tra foto.
+  La curva dell'errore di quantizzazione sale nelle prime iterazioni (fase di ordinamento, raggio e passo
+  grandi) e poi scende senza arrivare a un plateau: con più iterazioni la quantizzazione migliorerebbe ancora.
+- Mappa degli stili: regioni compatte per il Barocco (in alto a destra) e per il Romanico (in basso),
+  Gotico esteso su gran parte della mappa (52% del training), zone miste tra Romanico e Gotico.
+  **Nessun neurone è rinascimentale**: le 55 foto rinascimentali del training non sono maggioranza in
+  nessun neurone.
+- SOM come classificatore sul test: accuracy 0,560, macro-F1 0,432 (rete: 0,677 e 0,588). Il 48% delle foto
+  romaniche cade in neuroni gotici, il 55% di quelle rinascimentali in neuroni barocchi. Lo stile è in parte
+  organizzato per vicinanza nello spazio delle caratteristiche; il resto della separazione è fatto dalla
+  testa non lineare della rete.
+- Errori sulla mappa: U-matrix media 3,66 per le predizioni errate e 3,76 per quelle corrette, quindi gli
+  errori **non** si concentrano sui confini della U-matrix; cadono invece in neuroni un po' meno puri
+  (purezza 0,65 contro 0,71).
+- Foto rinascimentali del test: 55 in regioni barocche, 32 gotiche, 13 romaniche. La rete non ha costruito una
+  regione propria per il Rinascimento: la sua rappresentazione è interna a quella barocca. È la conferma, nello
+  spazio delle caratteristiche, del limite già osservato: servono più dati, non soglie diverse.
+- Chiese simili (5 vicini per similarità del coseno, tra training e validation): precisione@5 sullo stile 0,577;
+  Gotico 0,734, Romanico 0,530, Barocco 0,545, Rinascimentale 0,132 (circa 6 volte la quota di immagini
+  rinascimentali nell'archivio, intorno al 2%). Nell'app i vicini vanno presentati come «edifici che la rete
+  considera simili», non come esempi garantiti dello stesso stile.
+
+## D14 – Esperimento ad alta risoluzione (notebook 01b e 03d)
+Il notebook 04 mostra che la rete non ha una rappresentazione propria del Rinascimento. Gli autori di
+WikiChurches riportano che passare da 224 a 448 px è l'intervento più efficace (+4,2 punti di balanced
+accuracy, forte miglioramento proprio sul Rinascimentale), perché i dettagli che separano Rinascimento e
+Barocco (capitelli, cornici, timpani) a 224 px occupano pochi pixel.
+
+Configurazione: immagini a 512 px sul lato corto, ritaglio 448 × 448 (stesso rapporto 0,875 di 224/256),
+batch 16 per la memoria della GPU; per il resto identica a M3 (pesi iniziali di M1, blocchi 4-5, learning rate
+1·10⁻⁵, stessi dati, sovra-campionamento e augmentation). I pesi della VGG-16 non dipendono dalla dimensione
+dell'immagine grazie al Global Average Pooling, quindi M1 si riusa senza modifiche.
+
+Regole fissate prima: due addestramenti a 448 px (semi 42 e 43) contro i due a 224 px già disponibili
+(M3 del 03b e controllo del 03c), tutti con TTA; il 448 si accetta se la media della macro-F1 di validation
+migliora di almeno 0,03 (circa una deviazione standard tra addestramenti); il test si usa una sola volta, dopo
+la decisione. Tempo massimo: una sessione. È l'ultimo intervento sul modello; dopo, il modello si congela.
+
+**Risultati del notebook 03d.** Immagini a 512 px: 7.525 su 7.525, 279 (3,7%) con lato corto originale
+sotto i 448 px. Download con 16 connessioni parallele (Zenodo limita la singola connessione).
+
+Validation (1.082 immagini, con TTA):
+
+| Modello | Accuracy | Macro-F1 | F1 Rinasc. |
+|---|---|---|---|
+| 224 px – M3 (03b) / controllo (03c) | 0,719 / 0,689 | 0,639 / 0,597 (media 0,618) | 0,395 / 0,300 |
+| 448 px – seme 42 | 0,726 | 0,638 | 0,375 |
+| 448 px – seme 43 | 0,735 | **0,690** | 0,577 |
+
+Media a 448 px 0,664, Δ = +0,046 ≥ 0,03 → **accettato**; nuovo modello finale **M3 448 seme 43 + TTA**.
+La differenza tra i due semi a 448 (0,052) conferma la variabilità tra addestramenti già misurata.
+
+Test ufficiale (1.481 immagini):
+
+| Modello | Accuracy | Macro-F1 | Balanced acc. | F1 Rom. | F1 Got. | F1 Rin. | F1 Bar. |
+|---|---|---|---|---|---|---|---|
+| M3 224 + TTA (finale precedente) | 0,677 | 0,588 | 0,577 | 0,678 | 0,711 | 0,272 | 0,692 |
+| M3 448 seme 42 + TTA | 0,685 | 0,610 | 0,602 | 0,670 | 0,721 | 0,333 | 0,715 |
+| **M3 448 seme 43 + TTA (finale)** | **0,698** | **0,630** | **0,617** | 0,719 | 0,733 | 0,385 | 0,685 |
+
+- Entrambi gli addestramenti a 448 superano il 224 su tutte le metriche aggregate; il guadagno di balanced
+  accuracy (+0,040) è in linea con quello riportato dagli autori di WikiChurches (+4,2 punti).
+- Rinascimentale: recall da 0,17 a 0,31, confusione con il Barocco dal 56% al 43%. È l'unico intervento che ha
+  migliorato questa classe: a 224 px i dettagli distintivi andavano persi.
+- Recall del Barocco da 0,72 a 0,66: parte delle foto barocche è ora classificata come rinascimentale (6%).
+- McNemar 224 vs finale: b = 104, c = 135, p ≈ 0,052, al limite della significatività al 5%. Il miglioramento è
+  sostenuto dalla coerenza tra validation, test, due semi e letteratura, ma da solo non è significativo.
+- La TTA resta un effetto nel rumore (seme 43 sul test: 0,643 senza, 0,630 con); si mantiene la scelta fatta sul
+  validation.
+
+Il modello si congela: M3 448 seme 43 + TTA.
+
+## D15 – Foto fuori dominio (notebook 04)
+Il classificatore è a insieme chiuso: un edificio di un altro stile (ad esempio un monumento romano antico come il
+Colosseo) riceve comunque uno dei quattro stili, spesso con confidenza alta, e nessuna metrica sul test lo misura.
+Nell'app la foto viene quindi filtrata con un punteggio di «distanza da ciò che la rete conosce»; sopra la soglia la
+risposta è «stile non riconosciuto».
+
+Punteggi confrontati: 1 − confidenza della softmax; distanza media dai 5 vicini nelle caratteristiche delle foto di
+training (coseno); errore di quantizzazione della SOM. Soglia = 95° percentile del punteggio sul validation (il 95%
+delle chiese vere è accettato). Foto fuori dominio: le 327 immagini Ispano-musulmane di MonuMAI, divise per
+monumento in due metà (una per scegliere il punteggio, l'altra per riportare il risultato con il test).
+Limite: le foto MonuMAI differiscono anche per tipo di inquadratura, non solo per stile.
+
+## D16 – Estensione a 6 stili e a monumenti di ogni tipo (notebook 01c e 03e)
+Obiettivo dell'applicazione: riconoscere lo stile di qualsiasi monumento, non solo delle chiese. WikiChurches contiene
+solo chiese e solo 4 stili; un monumento romano antico come il Colosseo riceverebbe comunque uno dei 4 stili.
+
+Stili: Romanico, Gotico, Rinascimentale, Barocco, **Classico antico** (romano e greco) e **Neoclassico**.
+Il Neoclassico evita che gli edifici sette-ottocenteschi con colonne e timpani finiscano nel Classico o nel
+Rinascimentale.
+
+**Dati.** Edifici di ogni tipo da Wikidata con stile architettonico (P149, sotto-stili inclusi tramite P279*) e immagine
+(P18), un'immagine per edificio da Wikimedia Commons, al massimo 1.500 per stile, ridotte a 512 px sul lato corto.
+Stessa fonte di WikiChurches (Wikidata + Commons), senza limitarsi alle chiese. Solo edifici in Europa e nel
+Mediterraneo (latitudine 30–72°, longitudine −25–45°): la guida è pensata per monumenti europei, e senza questo
+limite il Neoclassico sarebbe dominato dalle case coloniali nordamericane. I monumenti antichi su Wikidata hanno
+raramente la proprietà «stile» (solo 259 con immagine): per il Classico antico si aggiungono gli edifici dei tipi
+tempio romano e greco, teatro romano e greco, anfiteatro romano. Circa 9.000 immagini in più: l'obiettivo
+non è la quantità ma coprire tipi di edificio e stili mancanti.
+
+**Pulizia delle etichette rumorose e confronto tra dataset.**
+1. edifici con stili di classi diverse scartati; chiese già in WikiChurches escluse (stesso codice Wikidata);
+2. immagini con lato corto < 400 px o proporzioni > 2,5 scartate;
+3. duplicati identici (hash percettivo ≤ 8 bit) rispetto a WikiChurches, MonuMAI e alle altre foto Wikidata;
+4. filtro «è un edificio?»: somma delle probabilità ImageNet delle classi architettoniche (VGG-16 originale) sotto il
+   1° percentile delle foto WikiChurches → scartata (con il 5° percentile, prima esecuzione, si scartava il 22%
+   delle foto, soprattutto rovine antiche, teatri e palazzi: il punteggio ImageNet favorisce le chiese);
+5. stesso soggetto: foto diverse dello stesso edificio dalla stessa angolazione (similarità del coseno ≥ 0,95 tra le
+   caratteristiche ImageNet) rispetto a WikiChurches, MonuMAI e alle altre foto Wikidata → scartate. Impedisce che un
+   edificio di validation/test entri nel training sotto un altro codice Wikidata;
+6. solo training: regressione logistica sulle caratteristiche ImageNet con validazione incrociata a 5 fold; le foto con
+   probabilità fuori fold del proprio stile < 0,02 **e** un altro stile ≥ 0,60 sono considerate etichettate male e
+   tolte. La prima versione (solo < 0,05) toglieva il 21% del training (1.145 foto su 5.350), soprattutto palazzi,
+   castelli e ville: con un classificatore lineare accurato al 43% la regola eliminava la varietà, non il rumore.
+I passi 1–5 valgono per tutti gli insiemi, il 6 solo per il training: validation e test non vengono «ripuliti» con un
+modello e restano una misura onesta. Split per edificio 70/15/15. Il notebook riporta, per ogni coppia di dataset, il
+numero di duplicati identici e di foto dello stesso soggetto.
+
+**Elementi che distinguono gli stili.** Dalle annotazioni degli esperti di MonuMAI si ritagliano gli elementi
+diagnostici (arco a sesto acuto, arco inflesso, arco trilobato, pinnacolo → Gotico; timpano triangolare, timpano curvo,
+serliana → Rinascimentale; timpano spezzato, colonna tortile → Barocco), solo se coerenti con lo stile dell'edificio e
+con lato ≥ 100 px, al massimo 400 per stile, escluse le foto MonuMAI che duplicano WikiChurches. Le foto intere di
+MonuMAI non avevano aiutato (03c, dominio diverso); i ritagli mostrano invece i dettagli su cui si basa lo stile.
+
+**Luce.** Augmentation forte più variazioni di luce del giorno: correzione gamma 0,75–1,35 e dominante calda/fredda ±8%.
+
+**Modello.** La rete finale a 448 px con lo strato di uscita esteso da 4 a 6 classi (pesi delle 4 classi esistenti
+conservati); fase 1 solo testa (learning rate 1·10⁻³), fase 2 blocchi 4-5 (1·10⁻⁵). Due varianti con la stessa
+ricetta: **base** (WikiChurches + Wikidata) ed **elementi** (+ ritagli MonuMAI). Un solo addestramento per variante
+(limiti di tempo): differenze tra varianti inferiori a ~0,04 di macro-F1 sono nel rumore.
+
+**Accettazione**, fissata prima e valutata sul validation: (a) sulle chiese WikiChurches la macro-F1 dei 4 stili perde
+al massimo 0,03 rispetto al modello a 4 stili; (b) sulle foto Wikidata dei 4 stili originali non va peggio. Tra le
+varianti valide si sceglie la migliore macro-F1 sul validation Wikidata a 6 stili. Se nessuna è valida, l'app usa il
+modello a 4 stili con il filtro delle foto fuori dominio (D15). Il modello a 4 stili resta comunque salvato.
+
+**Metriche aggiuntive** sul test: top-2 accuracy; accuratezza delle risposte sicure con soglia di confidenza scelta sul
+validation (la più bassa con accuratezza ≥ 85%) e relativa copertura; robustezza alla luce (sera, sole forte, tramonto,
+cielo coperto). L'85–90% come accuratezza su tutte le foto non è un obiettivo realistico: solo l'86% delle etichette di
+WikiChurches è del tutto corretto secondo la verifica di un esperto, e molti edifici sono di transizione tra due stili.
+L'app risponde quindi con sicurezza sopra la soglia e in modo graduato sotto.
+
+**Risultati del notebook 03e** (VGG-16 a 448 px, 6 stili, variante «base» per il test).
+
+| Test | 4 stili | 6 stili | McNemar |
+|---|---|---|---|
+| Chiese WikiChurches (1.481) | acc. 0,698 · macro-F1 0,630 | acc. 0,698 · macro-F1 0,619 | b = c = 109, p = 0,95 |
+| Monumenti Wikidata, 4 stili originali | acc. 0,489 · macro-F1 0,456 | acc. 0,507 · macro-F1 0,553 | p = 0,35 |
+| Monumenti Wikidata, 6 stili | – | acc. 0,560 · macro-F1 0,564 | |
+
+Validation: criterio (a) non soddisfatto (perdita di 0,08 di macro-F1 sulle chiese), (b) soddisfatto → **respinto**
+secondo la regola. Lettura: un modello addestrato solo su chiese non generalizza agli altri edifici (0,49 di accuracy);
+il Classico antico è riconosciuto (recall 0,81); sulle chiese il Rinascimentale viene confuso anche con il Neoclassico.
+Robustezza alla luce: calo massimo di 0,014 di accuracy. Top-2: 0,82.
+
+## D17 – Cambio strutturale: rete Transformer congelata e risposta gerarchica (notebook 03f)
+Dalle matrici di confusione del 03e quasi tutti gli errori cadono tra stili della stessa famiglia: raggruppando gli
+stili in Medievale (Romanico, Gotico), Classicismo moderno (Rinascimentale, Barocco, Neoclassico) e Classico antico,
+l'accuratezza della famiglia sul test è circa 0,81 sui monumenti e 0,89 sulle chiese, con lo stesso modello. Le
+famiglie sono motivate dalla storia dell'architettura (linguaggio medievale contro ordini classici), non dai dati;
+poiché il dato è emerso guardando il test, nel 03f vengono verificate prima sul validation.
+
+Cambiamenti:
+- **risposta gerarchica**: probabilità della famiglia = somma delle probabilità dei suoi stili; si sceglie la
+  famiglia, poi lo stile al suo interno. Metrica principale: accuratezza della famiglia; lo stile resta come secondo
+  livello, con le confusioni dentro il Classicismo moderno discusse come limite;
+- **reti moderne congelate**: CLIP ViT-L/14 (immagine-testo, 400 M di coppie) e DINOv2 ViT-L/14 (auto-supervisionato,
+  142 M di immagini), entrambe Vision Transformer. Si estraggono le caratteristiche una volta e si addestra solo una
+  testa (softmax lineare con L2, oppure MLP con dropout ed early stopping su un 10% del training separato per
+  edificio): pochi parametri, basso rischio di overfitting;
+- la VGG-16 a 6 stili resta come confronto sugli stessi dati e sullo stesso test (McNemar).
+
+Regole fissate prima: stessi dati e split del 03e; scelta della configurazione (rete, testa, L2) sul validation con
+criterio = media della macro-F1 sullo stile tra validation WikiChurches (4 stili) e Wikidata (6 stili), VGG-16 inclusa;
+test usato una sola volta; soglie delle risposte sicure scelte sul validation (stile ≥ 85%, famiglia ≥ 90%).
+
+**Risultati del notebook 03f.** Estrazione: CLIP 768 valori (4,5 min), DINOv2 2.048 valori (4,1 min) su GPU L4.
+Training 10.888 immagini (WikiChurches + Wikidata + ritagli MonuMAI), validation 1.082 + 1.214, test 1.481 + 1.214.
+
+Scelta sul validation (18 configurazioni + VGG-16): **CLIP+DINOv2 con testa MLP**, criterio 0,712 (VGG-16: 0,593).
+Le prime cinque configurazioni sono entro 0,02: la scelta non dipende da un singolo valore fortunato.
+
+Test (una sola volta):
+
+| | Famiglia: accuratezza | Stile: accuracy | Stile: macro-F1 | Top-2 |
+|---|---|---|---|---|
+| Chiese – CLIP+DINOv2 | **0,912** | **0,777** | **0,724** | 0,919 |
+| Chiese – VGG-16 6 stili | 0,895 | 0,698 | 0,619 | 0,870 |
+| Monumenti – CLIP+DINOv2 | **0,862** | **0,680** | **0,692** | 0,863 |
+| Monumenti – VGG-16 6 stili | 0,815 | 0,560 | 0,564 | 0,765 |
+
+McNemar VGG-16 vs CLIP+DINOv2: chiese, stile b = 88, c = 205, p ≈ 1·10⁻¹¹; famiglia p ≈ 0,035. Monumenti, stile
+b = 83, c = 229, p ≈ 2·10⁻¹⁶; famiglia p ≈ 2·10⁻⁵. Sul benchmark delle chiese (4 stili) il nuovo modello supera anche il
+migliore modello a 4 stili (accuracy 0,698 → 0,777, macro-F1 0,630 → 0,724).
+
+F1 per stile – chiese: Romanico 0,80 · Gotico 0,81 · Barocco 0,79 · **Rinascimentale 0,49** (35% classificato come
+Barocco). Monumenti: Classico antico 0,85 · Romanico 0,74 · Neoclassico 0,70 · Rinascimentale 0,68 · Barocco 0,60 ·
+**Gotico 0,59** (23% degli edifici gotici non religiosi classificati come rinascimentali: è la principale causa della
+recall più bassa della famiglia Medievale sui monumenti, 0,75).
+
+Affidabilità (2.695 foto di test): accuratezza della famiglia 0,89, dello stile 0,73, top-2 0,89. Risposte sicure con
+soglie scelte sul validation: stile (confidenza ≥ 0,80) corretto all'88% sul 56% delle foto; famiglia (≥ 0,60) corretta
+al 91% sul 95% delle foto. Luce simulata: calo massimo 0,007 (stile) e 0,004 (famiglia).
+
+Overfitting: backbone congelato, testa piccola con dropout ed early stopping su una parte del training separata per
+edificio; validation e test quasi identici (macro-F1 stile chiese 0,743 → 0,724, monumenti 0,682 → 0,692; famiglia
+0,905 → 0,912 e 0,860 → 0,862). Limite non verificabile: CLIP e DINOv2 sono stati pre-addestrati su immagini dal web,
+che potrebbero includere foto di Wikimedia Commons (senza le etichette di stile).
+
+**Modello definitivo dell'applicazione: CLIP ViT-L/14 + DINOv2 ViT-L/14 congelati, testa MLP, risposta gerarchica.**
+
+## D18 – SOM del modello definitivo (notebook 04b)
+La SOM viene ripetuta sulle caratteristiche del modello definitivo (CLIP + DINOv2, 2.816 valori) per tre scopi:
+verificare in modo non supervisionato che le 3 famiglie corrispondano a regioni dello spazio appreso; mostrare dove
+cadono le classi problematiche (chiese rinascimentali, gotico civile); confrontare con lo stesso protocollo lo spazio
+della VGG-16 a 6 stili. Caratteristiche standardizzate e ridotte con PCA a 256 componenti (le distanze euclidee in
+2.816 dimensioni sono dominate dal rumore e l'addestramento online sarebbe lento); griglia 20 × 20 (≈ 5·√N neuroni
+per N ≈ 11.000). La stessa rappresentazione serve all'app per gli edifici simili e per il filtro delle foto fuori
+dominio (foto Ispano-musulmane di MonuMAI, soglia al 95° percentile del validation).
+
+**Risultati del notebook 04b.** PCA a 256 componenti (79,1% della varianza); SOM 20 × 20, errore topografico 0,036
+(training) e 0,043 (test), migliore della SOM sulla VGG-16 (0,068 / 0,103).
+- Le 3 famiglie formano regioni separate (purezza media 0,88); il Rinascimentale ha 34 neuroni propri (0 nella SOM
+  della VGG-16 a 4 stili).
+- SOM come classificatore, senza etichette in addestramento: famiglia 0,859 (chiese) e 0,835 (monumenti), contro 0,912
+  e 0,862 della rete; stile 0,638 e 0,572 contro 0,777 e 0,680. Le famiglie sono una struttura presente nei dati.
+- Classi problematiche: delle 100 chiese rinascimentali del test, 51 cadono in regioni barocche; degli edifici gotici
+  non religiosi, il 77% cade in regioni medievali (l'errore Gotico → Rinascimentale nasce soprattutto nella testa).
+- Spazio CLIP + DINOv2 contro VGG-16 (stessa SOM): famiglia sui monumenti 0,803 contro 0,761, stile 0,546 contro 0,451.
+- Edifici simili (5 vicini): nello spazio della testa famiglia@5 0,884 / 0,840 e stile@5 0,711 / 0,629 (chiese /
+  monumenti), contro 0,857 / 0,811 e 0,661 / 0,565 delle caratteristiche grezze, che riflettono anche materiale,
+  regione e tipo di edificio. L'app usa lo spazio della testa e mostra solo edifici dello stile predetto.
+- Foto fuori dominio (Ispano-musulmane): il modello assegna comunque una famiglia (Classico antico 145, Medievale 132,
+  Classicismo moderno 50), con confidenza media 0,66 contro 0,91 sul test. Punteggio scelto sulla metà A: distanza dai
+  5 vicini (AUROC 0,97 / 0,96). Con soglia al 95° percentile del validation: respinto il 75% delle foto fuori dominio
+  e il 4,6% delle foto vere. La confidenza della softmax è meno efficace (AUROC 0,88 per la famiglia, 0,74 per lo stile).
+
+## D19 – Spiegabilità: LIME sul modello definitivo, Grad-CAM sulla VGG-16 (notebook 05)
+Il modello definitivo è composto da due Vision Transformer congelati e da una testa MLP. Grad-CAM nasce per le reti
+convoluzionali (gradiente sull'ultima mappa spaziale); sui Transformer richiede adattamenti e produce mappe 16 × 16
+meno affidabili. LIME tratta il modello come una scatola nera e spiega quindi esattamente il modello dell'app.
+- **LIME** (implementato secondo le slide): super-pixel SLIC (~60), 600 versioni perturbate con super-pixel spenti
+  (colore medio), kernel esponenziale sulla distanza del coseno (larghezza 0,25), regressione Ridge pesata; l'R²
+  misura la fedeltà locale. Tre uscite spiegate: stile predetto, famiglia (somma degli stili), contrasto (stile
+  predetto − secondo stile).
+- **Grad-CAM** sulla VGG-16 a 6 stili (448 px, `block5_conv3`, mappa 28 × 28): metodo classico, come confronto.
+- **Deletion test**: sfocatura progressiva dei pixel dal più al meno importante, probabilità dello stile predetto,
+  area sotto la curva confrontata con un ordine casuale (test di Wilcoxon appaiato).
+- **Nomi degli elementi**: le 3 zone LIME più importanti vengono ritagliate e CLIP (zero-shot) sceglie il nome tra
+  31 frasi (elementi tipici degli stili e distrattori). Verifica sui ritagli degli elementi annotati da MonuMAI.
+Immagini nel formato di valutazione della VGG-16: lato corto 512 px, ritaglio centrale 448 × 448.
+
+**Risultati (48 foto: 6 monumenti per stile + 3 chiese per ciascuno dei 4 stili originali; 600 campioni LIME).**
+- Controllo sull'insieme (ritaglio 448, senza TTA): stile 0,71 (modello definitivo) e 0,46 (VGG-16), famiglia 0,92.
+  L'insieme è bilanciato per stile: il valore va confrontato con la balanced accuracy del test (0,712 chiese, 0,707
+  monumenti), non con l'accuracy.
+- Fedeltà locale di LIME (R² medio): stile 0,71, contrasto 0,71, famiglia 0,63 (la probabilità della famiglia è
+  spesso saturata vicino a 1 e varia poco: più difficile da approssimare con una retta).
+- Deletion test, AUC media (più bassa = meglio): LIME 0,485 contro 0,686 dell'ordine casuale, migliore nel 100% delle
+  foto (Wilcoxon p = 7·10⁻¹⁵); cancellando il 20% indicato da LIME la probabilità scende da 0,79 a 0,58, a caso solo a
+  0,76. Grad-CAM 0,234 contro 0,404, migliore nel 96% (p = 9·10⁻¹¹). Le due AUC non sono confrontabili tra loro
+  (modelli diversi, super-pixel contro celle 28 × 28; la VGG-16 perde probabilità anche con cancellazioni casuali).
+- Con l'immagine interamente sfocata il modello definitivo dà ancora 0,46 allo stile predetto: una parte della
+  decisione si basa su informazioni a bassa frequenza (colori, materiale, sagoma), non solo sugli elementi.
+- Galleria: spiegazioni convincenti sugli esempi corretti (bugnato di Palazzo Sanuti Bevilacqua, cavea dell'anfiteatro
+  di Avella, pronao della cattedrale di Göteborg). S. Maria della Pace (Roma), etichettata Rinascimentale e predetta
+  Barocca: la facciata fotografata è di Pietro da Cortona (1656), cioè barocca; è un caso di etichetta riferita
+  all'edificio e non alla parte fotografata.
+- **Nomi degli elementi (punto debole):** sui ritagli MonuMAI nome corretto 38% (top-3 65%); arco inflesso 2%, timpano
+  spezzato 5%. Sulle foto CLIP assegna «timpano curvo» a finestre, bugnato e frontoni triangolari, sempre con «tipico:
+  Rinascimentale»: un'indicazione sbagliata per uno scopo educativo.
+- Problemi del notebook e dei dati: come esempio di uno stile la galleria mostrava una foto classificata male (e la
+  stessa foto due volte); un'immagine «gotica» (Martinsburg) è un'incisione antica, non una fotografia.
+
+## D20 – Nomi degli elementi con classificatore e astensione, qualità dei dati (notebook 05b)
+Correzioni al notebook 05 senza riaddestrare il modello di stile; LIME non cambia (fedeltà già dimostrata).
+- **Vocabolario v2:** 46 nomi con più frasi ciascuno e 4 modelli di frase (media dei vettori di testo CLIP); nuovi
+  elementi (bugnato, merlatura, loggia, portale strombato, lesene…) e zone di sfondo (cielo, alberi, persone, auto,
+  prato, acqua), che vengono scartate invece di ricevere a forza il nome di un elemento.
+- **Classificatore degli elementi:** regressione logistica multinomiale (un neurone softmax per classe) sui vettori
+  CLIP dei ritagli MonuMAI, 9 elementi diagnostici + classe «altro» (ritagli casuali di foto romaniche del training,
+  dove gli elementi diagnostici di Gotico, Rinascimento e Barocco sono assenti) per misurare i falsi allarmi.
+  Validazione incrociata a 5 parti raggruppata per monumento; regolarizzazione scelta con una validazione interna,
+  anch'essa per monumento. Se il classificatore indica «altro», vale il nome zero-shot tra gli altri elementi.
+- **Astensione:** soglia di confidenza più bassa con precisione ≥ 80%; sotto la soglia la zona si mostra come
+  «dettaglio decisivo» senza nome (stessa logica delle risposte sicure dello stile).
+- **Elemento tipico:** MonuMAI associa il timpano triangolare al Rinascimento perché considera solo 3 stili; con 6 stili
+  compare anche nei templi antichi, nel Barocco e nel Neoclassico, quindi non viene più indicato come tipico di uno
+  stile. Timpano curvo e bugnato rimandano alla famiglia Classicismo moderno.
+- **Qualità dei dati:** CLIP zero-shot «fotografia o disegno?» su training e test (caratteristiche già calcolate nel
+  notebook 03f). Le metriche ufficiali restano quelle di D17; quelle senza le immagini segnalate sono riportate a parte.
+- **Galleria:** per ogni stile la foto classificata correttamente con la confidenza più alta; casi problematici senza
+  duplicati; un'immagine non fotografica come caso a sé.
+
+**Risultati del notebook 05b.**
+- Disegni e incisioni (probabilità CLIP ≥ 0,5): 18 immagini su 2.695 nel test, 63 su 10.021 nel training
+  (WikiChurches + Wikidata). Escluderle non cambia le metriche (stile 0,777 → 0,776 chiese, 0,680 → 0,679 monumenti;
+  famiglia invariata); la riga «tutte le immagini» riproduce esattamente il test di D17. Tra 0,5 e 0,75 compaiono anche
+  fotografie vere: nell'app l'avviso «sembra un disegno» usa la soglia 0,9.
+- Nomi sui ritagli MonuMAI (validazione per monumento, 867 ritagli + 600 «altro»): nome corretto 0,302 (05), 0,172
+  (zero-shot v2: i nomi generici aggiunti sottraggono i ritagli agli elementi diagnostici), **0,938** con il
+  classificatore (media per elemento 0,83; timpano curvo 13 ritagli e arco trilobato 14: valori molto incerti).
+  Soglie: classificatore 0,30 (il minimo della griglia: nessuna astensione), zero-shot 0,99 (80% mai raggiunto).
+- Sulle zone LIME delle 48 foto: solo il 20% delle zone riceve un nome e 2 nomi su 3 sono «timpano spezzato», anche su
+  un cornicione rinascimentale. Il «✓» sulla famiglia nascondeva elementi barocchi su edifici rinascimentali.
+  Cause: esempi di addestramento diversi dalle zone LIME (ritagli stretti e centrati) ed esempi «altro» solo romanici.
+
+## D21 – Nomi degli elementi tarati sulle zone tipo LIME (notebook 05c)
+- **Esempi nelle condizioni dell'app:** sulle foto MonuMAI annotate (geometria 448 × 448, super-pixel SLIC, riquadri
+  costruiti come le zone LIME) ogni riquadro diventa esempio di un elemento diagnostico se lo contiene in gran parte
+  (≥ 60%, e l'elemento occupa ≥ 15% del riquadro) o se l'elemento occupa almeno metà del riquadro; esempio «altro»
+  se non tocca alcun elemento annotato di qualsiasi tipo; altrimenti è scartato. Si aggiungono zone delle foto
+  romaniche e i ritagli stretti del 05b.
+- **Confronto equo:** in ogni parte della validazione incrociata (per monumento) si addestrano il classificatore come
+  nel 05b e quello nuovo; metriche separate per dominio (ritagli stretti, zone con elementi, zone senza elementi).
+- **Soglia** tarata sulle zone tipo LIME (precisione dei nomi mostrati ≥ 80%, contando come errore ogni nome in una
+  zona senza elementi). Zero-shot usato solo per scartare lo sfondo. «✓» solo se l'elemento è tipico dello stile
+  predetto; altrimenti «di solito: <stile>».
+
+**Risultati del notebook 05c** (7.622 esempi da 1.045 gruppi; validazione incrociata a 5 parti per monumento).
+
+| Classificatore | Ritagli stretti: nome corretto | Zone LIME con elementi: nome corretto | Falsi allarmi (zone MonuMAI senza elementi) |
+|---|---|---|---|
+| come nel 05b | 0,943 (0,857 per elemento) | 0,677 (0,473 per elemento) | 0,472 |
+| 05c | 0,907 (0,800 per elemento) | **0,797 (0,720 per elemento)** | **0,138** |
+
+Con la soglia scelta (0,65, la più bassa con precisione ≥ 80% sulle zone tipo LIME): precisione dei nomi mostrati
+0,819 (05b con la sua soglia: 0,462), elementi riconosciuti e mostrati 0,725, falsi allarmi 0,067 (05b: 0,399).
+Precisione per nome mostrato: colonna tortile 0,98 · pinnacolo gotico 0,89 · arco a sesto acuto 0,88 · arco inflesso
+0,82 · timpano spezzato 0,79 · timpano triangolare 0,74 · arco trilobato 0,65 · timpano curvo 0,60 · serliana 0,60.
+Sulle 48 foto di valutazione riceve un nome l'8% delle zone (12 su 144): metà degli stili (Romanico, Classico antico,
+Neoclassico) non ha elementi annotati in MonuMAI.
+
+## D22 – Chiusura della spiegabilità: cosa entra nell'app e nel paper
+- **LIME è il metodo di spiegazione dell'app**, applicato al modello definitivo: tre uscite (famiglia, stile,
+  contrasto con lo stile rivale), 600 perturbazioni, zone decisive ingrandite. Fedeltà verificata con l'R² e con il
+  deletion test (D19). La pipeline è raccolta in `xai.spiega`.
+- **Grad-CAM resta sulla VGG-16, solo come confronto nel paper.** Non si applica al modello definitivo: non ne cambia
+  le metriche (una spiegazione non modifica le predizioni) e sui due Vision Transformer congelati richiederebbe mappe
+  16 × 16 da combinare tra due reti, meno affidabili. La divisione è motivata: Grad-CAM è nato per le reti
+  convoluzionali, LIME è indipendente dal modello. Ciascuno è validato contro il proprio ordine casuale; le due AUC non
+  si confrontano direttamente.
+- **Nomi degli elementi:** classificatore del 05c con soglia 0,65; l'app mostra solo i 5 nomi con precisione ≥ 0,75
+  (`xai.NOMI_AFFIDABILI`). Le altre zone sono «dettaglio decisivo», senza nome. Il ✓ compare solo se l'elemento è
+  tipico dello stile predetto.
+- **Non si prosegue** con altri esperimenti sui nomi (vocabolari, zero-shot): i limiti restanti dipendono dagli
+  elementi annotati disponibili (9, per 3 stili su 6) e non dal metodo.
+- Notebook di riferimento: 05 (LIME, Grad-CAM, deletion test) e 05c (nomi). Il 05b è un passaggio intermedio:
+  il vocabolario zero-shot ampliato era peggiore (0,30 → 0,17) e il classificatore addestrato su ritagli stretti
+  non funzionava sulle zone LIME.
+
+## D23 – Applicazione (notebook 06)
+- **Gradio in Colab** con link pubblico: il modello (CLIP + DINOv2, circa 1,2 GB) e LIME (600 predizioni per foto)
+  richiedono una GPU; senza GPU una spiegazione richiederebbe minuti. Il link dura finché il notebook è attivo (al
+  massimo 72 ore) e si rigenera rieseguendo il notebook.
+- **Due tempi:** la risposta (famiglia, stile, descrizione, edifici simili) arriva in circa 1 s; LIME e le zone
+  ingrandite arrivano dopo circa 20 s, con barra di avanzamento. La predizione usa la media delle caratteristiche di
+  foto originale e ribaltata, come nel test.
+- **Onestà della risposta:** famiglia e stile con la frase sull'affidabilità misurata sul test (88% / 91% per le
+  risposte sicure); avvisi per foto fuori dominio (soglia ricalcolata come nel 04b: 95° percentile del validation) e
+  per disegni (CLIP, probabilità ≥ 0,9).
+- **Riscontri** salvati su Drive e usati solo dopo verifica manuale: etichette non controllate potrebbero peggiorare
+  il modello, e le foto possono contenere persone.
+- **Mascotte Mira:** personaggio originale (figura morbida di marmo con occhi a punto, corona d'alloro, drappo porpora,
+  su un capitello). Logo: quadrato arrotondato pesca porpora a tinta unita con una «M» pesca formata da due colonne, disegnata in SVG e animata con CSS.
+- **Grafica:** «Guida» come vetrina di una piattaforma di streaming (foto del monumento in grande con il titolo dello
+  stile, righe orizzontali da scorrere: zone LIME, edifici simili); risposte come messaggi di chat di Mira; pulsanti
+  e titoli in Poppins, bolle e carte bianche su fondo nero a tinta unita, accenti pesca (pulsante, titolo, confidenza) e porpora (numeri, bolle, etichette), niente sfumature decorative; puntini solo per la confidenza e l'indicatore di attesa.
+  Tutto il risultato è HTML generato in Python (`app_ui.vetrina_html`), così la grafica non dipende dai componenti
+  di Gradio.
+
+## D24 – Nomi delle famiglie corretti dal punto di vista storico-artistico (notebook 08)
+- **Problema:** «Classicismo moderno» indica in storia dell'arte correnti precise (il classicismo seicentesco francese
+  e bolognese) e mal si adatta al Barocco, che la storiografia da Wölfflin definisce *in opposizione* al classico;
+  «Classico antico» si confondeva con «Classicismo» e, in senso stretto, «classico» indica solo la Grecia del
+  V–IV secolo a.C.
+- **Scelta:** periodizzazione da manuale, mantenendo come criterio il linguaggio degli ordini classici:
+  - famiglie: **Medievale** (Romanico, Gotico) · **Età moderna** (XV–XIX secolo: Rinascimentale, Barocco,
+    Neoclassico) · **Antichità classica**;
+  - lo stile «Classico antico» diventa **Greco-romano**. Gli identificativi interni (`Classical`, ecc.) non cambiano.
+- **Cosa non cambia:** dati, modello, soglie, metriche. Si rigenerano solo le figure che contengono i nomi
+  (notebook 08) e si aggiornano app, paper e README.
+- **Neobarocco:** il Barocco Wikidata comprende 155 edifici etichettati «baroque revival», «Edwardian» o «Queen Anne»
+  (XIX–XX secolo; 105 training, 22 validation, 21 test). Si lasciano nei dati e si dichiarano come limite: per la
+  fonte sono barocchi, per la storia dell'arte sono storicismo. Il neogotico invece non è entrato nel Gotico.
+
+## D25 – Estensione per Sistemi Intelligenti: sistema di raccomandazione «Monumenti simili a questo» (notebook 09)
+- **Obiettivo:** dopo lo stile, consigliare altri monumenti da visitare simili a quello fotografato. La vecchia
+  riga «edifici simili» (5 foto più vicine nello spazio della testa, notebook 04b) diventa un sistema di
+  raccomandazione progettato e valutato con i metodi del corso.
+- **Paradigma content-based** (non collaborative filtering): l'utente non ha storico di voti e la foto che carica è
+  già un profilo («altri item come questo»). Il CF soffrirebbe di **cold-start** per ogni nuovo utente e per ogni
+  nuovo edificio; il content-based consiglia subito anche edifici mai votati né visti dal modello (verificato nella
+  sezione 8 del notebook con un catalogo di soli edifici del validation).
+- **Item = edificio, non foto:** il vettore dell'edificio è la media normalizzata delle sue foto; così non si
+  consigliano due foto dello stesso monumento.
+- **Somiglianza combinata:** peso · coseno nello spazio della testa (512 attivazioni, organizzato per stile) +
+  (1 − peso) · coseno sulle caratteristiche grezze CLIP + DINOv2 (tipo di edificio, materiali, paesaggio). Il peso si
+  sceglie sul validation (nDCG@5 più alto).
+- **Filtro sullo stile predetto** (quello mostrato all'utente): i consigli sono coerenti con la risposta.
+- **Diversità con MMR** (λ · rilevanza − (1 − λ) · massima somiglianza con i già scelti, sulle caratteristiche
+  grezze): evita cinque chiese quasi identiche. Regola fissata prima: il λ più basso con nDCG@5 di validation non
+  peggiore di 0,01 rispetto a λ = 1.
+- **Rilevanza per la valutazione:** 3 = stesso stile e stesso tipo di edificio, 2 = stesso stile, 1 = stessa
+  famiglia, 0 = altrimenti. Il tipo (religioso, fortificato, antico, residenza, civile) viene dalla proprietà
+  Wikidata «istanza di» (`rc.categoria_edificio`); le chiese WikiChurches sono «religioso», i tipi generici («edificio»)
+  restano «altro» e non contano per «stile + tipo». Con il solo stile la valutazione sarebbe inutile: dopo il filtro
+  ogni lista è tutta giusta o tutta sbagliata e si misurerebbe il classificatore, non l'ordinamento.
+- **Metriche:** Precision@5, Recall@5, nDCG@5, MRR, famiglia@5, P@5 stile+tipo; oltre l'accuratezza: diversità
+  intra-lista (ILD), Paesi diversi, copertura del catalogo e indice di Gini dell'esposizione (long tail / hubness).
+  Recall@5 resta molto bassa per costruzione (migliaia di edifici rilevanti, 5 consigli): si riporta ma non si usa.
+- **Confronto:** casuale, solo stile predetto, coseno grezzo, coseno testa, testa + filtro (versione precedente),
+  combinata, combinata + MMR; test di Wilcoxon appaiato sull'nDCG@5 per query.
+- **Relevance feedback di Rocchio** (α = 1, β = 0,75, γ = 0,15, valori classici): nell'app «Quali ti piacciono?» →
+  «Mostrami altri come questi». Valutato offline con un utente simulato che gradisce gli edifici dello stile e del
+  tipo veri; se l'utente non gradisce nulla si toglie il filtro sullo stile predetto (il feedback negativo corregge
+  il classificatore).
+- **Spiegazione dei consigli:** ogni carta dice perché è stata proposta (stile o famiglia in comune, somiglianza,
+  Paese); LIME continua a spiegare lo stile della foto.
+- **Preferenze salvate** (`preferenze.csv` su Drive): voti espliciti utente-item, la base per affiancare in futuro
+  un CF (sistema ibrido) quando ci saranno abbastanza utenti.
+- **Costo:** nessun addestramento; si usano caratteristiche e testa del 03f. Il notebook gira su CPU in pochi minuti.
